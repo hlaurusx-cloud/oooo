@@ -5,15 +5,15 @@ from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
-    roc_auc_score,
     precision_score,
     recall_score,
     f1_score,
+    roc_auc_score,
     roc_curve,
 )
 
-st.set_page_config(page_title="다중 Logit 모델", layout="wide")
-st.title("🔍 다중 Logit (로지스틱 회귀) 모델 자동 구축")
+st.set_page_config(page_title="Loan_status 예측 모델", layout="wide")
+st.title("🔍 Logit (로지스틱 회귀) 모델 - `Loan_status` 예측")
 
 # 1️⃣ 데이터 업로드
 st.sidebar.header("1️⃣ 데이터 업로드")
@@ -28,163 +28,97 @@ st.success("✅ 데이터 업로드 및 읽기가 완료되었습니다!")
 st.subheader("📌 데이터 미리보기")
 st.dataframe(df.head())
 
-# 2️⃣ 이진 분류 변수(Y) 탐색
-st.sidebar.header("2️⃣ 예측 대상 변수(Y) 선택 (다중 선택 가능)")
-binary_cols = [col for col in df.columns if df[col].nunique() == 2]
+# 2️⃣ 목표 변수(Y)는 자동으로 Loan_status 로 고정
+TARGET = "Loan_status"
 
-if not binary_cols:
-    st.error("❌ 이진 분류 변수(Y)가 없어 Logit 모델을 구축할 수 없습니다.")
+if TARGET not in df.columns:
+    st.error(f"❌ 데이터에 `{TARGET}` 변수가 없습니다. 존재하는 컬럼명을 다시 확인하세요.")
     st.stop()
 
-st.write("**예측 가능한 이진 분류 변수 목록(Y):**")
-st.write(binary_cols)
+st.write(f"**예측 대상(Y) 변수:** `{TARGET}`")
 
-selected_targets = st.sidebar.multiselect(
-    "예측할 Y 변수를 선택하세요 (여러 개 선택 가능):",
-    options=binary_cols,
-    default=binary_cols,  # 기본적으로 전체 선택
-)
-
-if not selected_targets:
-    st.warning("⚠ 최소 한 개 이상의 Y 변수를 선택해야 합니다.")
-    st.stop()
-
-# 3️⃣ X (특징 변수) 선택
-st.sidebar.header("3️⃣ 특징 변수(X) 선택")
+# 3️⃣ 특징(X)는 Loan_status 를 제외한 모든 수치형 변수
 numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-
-if not numeric_cols:
-    st.error("❌ 수치형 특징 변수가 없어 모델 훈련이 불가능합니다.")
-    st.stop()
-
-feature_cols = st.sidebar.multiselect(
-    "X 변수(특징)를 선택하세요.", options=numeric_cols, default=numeric_cols
-)
+feature_cols = [col for col in numeric_cols if col != TARGET]
 
 if not feature_cols:
-    st.error("⚠ 최소 한 개 이상의 X 변수를 선택해야 합니다.")
+    st.error("❌ 수치형 특징 변수가 부족합니다. (Loan_status 제외)")
     st.stop()
 
-# 4️⃣ 훈련 설정 (random_state 입력창 제거, 내부에서 고정값 사용)
-st.sidebar.header("4️⃣ 훈련 설정")
+st.write(f"**자동 선택된 X 변수 목록 ({len(feature_cols)}개):**")
+st.write(feature_cols)
+
+# 4️⃣ 훈련 설정
+st.sidebar.header("2️⃣ 훈련 설정")
 test_size = st.sidebar.slider("테스트 데이터 비율", 0.1, 0.4, 0.3, step=0.05)
-RANDOM_STATE = 42  # 화면에는 안 보이고, 내부에서만 고정 시드 사용
+RANDOM_STATE = 42  # 내부 고정
 
-# 🚀 모델 훈련 실행
-if st.sidebar.button("모든 모델 훈련 시작"):
-    results = []
+# 🚀 모델 훈련 버튼
+if st.sidebar.button("Loan_status 예측 모델 훈련 시작"):
+    # 🎯 X, y 구성
+    X = df[feature_cols]
+    y = df[TARGET]
 
-    for target in selected_targets:
-        st.markdown(f"---\n### 🎯 예측 대상(Y): `{target}`")
+    # 이진 분류인지 확인
+    if y.nunique() != 2:
+        st.error(f"❌ `{TARGET}` 변수는 이진 분류가 아닙니다. 현재 값: {y.unique()}")
+        st.stop()
 
-        X = df[feature_cols].copy()
-        if target in X.columns:
-            X = X.drop(columns=[target])  # 타겟 변수는 X에서 제거
+    # 🧹 결측치 & 무한대 정리
+    data_xy = pd.concat([X, y], axis=1).replace([np.inf, -np.inf], np.nan)
+    before = len(data_xy)
+    data_xy = data_xy.dropna()
+    after = len(data_xy)
 
-        y = df[target]
+    st.write(f"🧹 결측치/무한대 제거: **{before - after}개 삭제 → 현재 {after}개 샘플 유지**")
 
-        if y.nunique() != 2:
-            st.warning(f"`{target}` 변수는 이진 분류가 아니므로 건너뜁니다.")
-            continue
+    X_clean = data_xy.drop(columns=[TARGET])
+    y_clean = data_xy[TARGET]
 
-        # 1. 데이터 정리 (결측치 & 무한대 제거)
-        data_xy = pd.concat([X, y], axis=1)
-        data_xy = data_xy.replace([np.inf, -np.inf], np.nan)
-        before = len(data_xy)
-        data_xy = data_xy.dropna()
-        after = len(data_xy)
+    # 데이터 분리
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_clean, y_clean,
+        test_size=test_size,
+        random_state=RANDOM_STATE,
+        stratify=y_clean
+    )
 
-        if after < 50:
-            st.warning(f"`{target}` 정리 후 샘플 수가 {after}개로 너무 적습니다. 건너뜁니다.")
-            continue
+    # 모델 훈련
+    model = LogisticRegression(max_iter=1000, solver="liblinear")
+    model.fit(X_train, y_train)
 
-        st.write(
-            f"🧹 `{target}` : 결측치/무한대 제거 후 **{before - after}개 삭제**, "
-            f"남은 샘플 **{after}개**"
-        )
+    # 예측
+    y_pred = model.predict(X_test)
+    y_proba = model.predict_proba(X_test)[:, 1]
 
-        X_clean = data_xy.drop(columns=[target])
-        y_clean = data_xy[target]
+    # 📊 성능 지표 계산
+    acc = accuracy_score(y_test, y_pred)
+    prec = precision_score(y_test, y_pred, zero_division=0)
+    rec = recall_score(y_test, y_pred, zero_division=0)
+    f1 = f1_score(y_test, y_pred, zero_division=0)
+    auc = roc_auc_score(y_test, y_proba)
 
-        if y_clean.nunique() != 2:
-            st.warning(f"`{target}` 정리 후 한 개의 클래스만 남아 모델 훈련 불가. 건너뜁니다.")
-            continue
+    st.subheader("📊 모델 성능 지표")
+    st.write(f"- 정확도 (Accuracy) : **{acc:.4f}**")
+    st.write(f"- 정밀도 (Precision) : **{prec:.4f}**")
+    st.write(f"- 재현율 (Recall) : **{rec:.4f}**")
+    st.write(f"- F1-score : **{f1:.4f}**")
+    st.write(f"- ROC-AUC : **{auc:.4f}**")
 
-        # 2. 훈련/테스트 데이터 분리
-        try:
-            X_train, X_test, y_train, y_test = train_test_split(
-                X_clean,
-                y_clean,
-                test_size=test_size,
-                random_state=RANDOM_STATE,
-                stratify=y_clean,
-            )
-        except ValueError as e:
-            st.warning(f"`{target}` 훈련/테스트 분리 오류: {e}")
-            continue
+    # ROC 곡선 출력
+    fpr, tpr, _ = roc_curve(y_test, y_proba)
+    roc_df = pd.DataFrame({"FPR": fpr, "TPR": tpr}).set_index("FPR")
+    st.line_chart(roc_df)
 
-        # 3. 모델 훈련
-        model = LogisticRegression(max_iter=1000, solver="liblinear")
-        try:
-            model.fit(X_train, y_train)
-        except ValueError as e:
-            st.warning(f"`{target}` 모델 훈련 중 오류 발생: {e}")
-            continue
+    # 회귀 계수도 보여주기
+    coef_df = pd.DataFrame({
+        "Feature": X_clean.columns,
+        "Coefficient": model.coef_[0],
+        "Odds_Ratio (exp(coef))": np.exp(model.coef_[0])
+    }).sort_values("Odds_Ratio (exp(coef))", ascending=False)
 
-        # 4. 예측
-        y_pred = model.predict(X_test)
-        try:
-            y_proba = model.predict_proba(X_test)[:, 1]
-        except Exception:
-            y_proba = None
+    st.subheader("📌 회귀 계수 (변수 영향력)")
+    st.dataframe(coef_df)
 
-        # 5. 성능 지표 계산
-        acc = accuracy_score(y_test, y_pred)
-        prec = precision_score(y_test, y_pred, zero_division=0)
-        rec = recall_score(y_test, y_pred, zero_division=0)
-        f1 = f1_score(y_test, y_pred, zero_division=0)
-
-        st.write(f"- 정확도 (Accuracy): **{acc:.4f}**")
-        st.write(f"- 정밀도 (Precision): **{prec:.4f}**")
-        st.write(f"- 재현율 (Recall): **{rec:.4f}**")
-        st.write(f"- F1 점수 (F1-score): **{f1:.4f}**")
-
-        # ROC-AUC 및 ROC 곡선
-        if y_proba is not None and y_test.nunique() == 2:
-            try:
-                auc = roc_auc_score(y_test, y_proba)
-                st.write(f"- ROC-AUC: **{auc:.4f}**")
-
-                # ROC 곡선 데이터 계산
-                fpr, tpr, _ = roc_curve(y_test, y_proba)
-                roc_df = pd.DataFrame({"FPR": fpr, "TPR": tpr}).set_index("FPR")
-
-                st.line_chart(roc_df)  # FPR을 x축, TPR을 y축으로 ROC 곡선 표시
-            except ValueError:
-                auc = np.nan
-                st.write("- ROC-AUC 계산 불가")
-        else:
-            auc = np.nan
-            st.write("- ROC-AUC 제공 불가")
-
-        # 6. 결과 저장 (요약 테이블용)
-        results.append(
-            {
-                "Target (Y)": target,
-                "Accuracy": round(acc, 4),
-                "Precision": round(prec, 4),
-                "Recall": round(rec, 4),
-                "F1-score": round(f1, 4),
-                "ROC-AUC": round(auc, 4) if not np.isnan(auc) else None,
-            }
-        )
-
-    # 7. 결과 요약 테이블
-    if results:
-        st.subheader("📊 모든 Logit 모델 성능 비교")
-        results_df = pd.DataFrame(results)
-        st.dataframe(results_df)
-    else:
-        st.warning("⚠ 성공적으로 훈련된 모델이 없습니다.")
 else:
-    st.info("👈 왼쪽 설정을 완료한 후 **모든 모델 훈련 시작** 버튼을 눌러주세요.")
+    st.info("👈 CSV 업로드 후 'Loan_status 예측 모델 훈련 시작' 버튼을 클릭하십시오.")
