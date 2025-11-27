@@ -3,7 +3,14 @@ import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, roc_auc_score
+from sklearn.metrics import (
+    accuracy_score,
+    roc_auc_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    roc_curve,
+)
 
 st.set_page_config(page_title="다중 Logit 모델", layout="wide")
 st.title("🔍 다중 Logit (로지스틱 회귀) 모델 자동 구축")
@@ -58,10 +65,10 @@ if not feature_cols:
     st.error("⚠ 최소 한 개 이상의 X 변수를 선택해야 합니다.")
     st.stop()
 
-# 4️⃣ 훈련 설정
+# 4️⃣ 훈련 설정 (random_state 입력창 제거, 내부에서 고정값 사용)
 st.sidebar.header("4️⃣ 훈련 설정")
 test_size = st.sidebar.slider("테스트 데이터 비율", 0.1, 0.4, 0.3, step=0.05)
-random_state = st.sidebar.number_input("랜덤 시드(random_state)", value=42, step=1)
+RANDOM_STATE = 42  # 화면에는 안 보이고, 내부에서만 고정 시드 사용
 
 # 🚀 모델 훈련 실행
 if st.sidebar.button("모든 모델 훈련 시작"):
@@ -80,7 +87,7 @@ if st.sidebar.button("모든 모델 훈련 시작"):
             st.warning(f"`{target}` 변수는 이진 분류가 아니므로 건너뜁니다.")
             continue
 
-        # 데이터 정리 (결측치 & 무한대 제거)
+        # 1. 데이터 정리 (결측치 & 무한대 제거)
         data_xy = pd.concat([X, y], axis=1)
         data_xy = data_xy.replace([np.inf, -np.inf], np.nan)
         before = len(data_xy)
@@ -91,7 +98,10 @@ if st.sidebar.button("모든 모델 훈련 시작"):
             st.warning(f"`{target}` 정리 후 샘플 수가 {after}개로 너무 적습니다. 건너뜁니다.")
             continue
 
-        st.write(f"🧹 `{target}` : 결측치/무한대 제거 후 **{before - after}개 삭제**, 남은 샘플 **{after}개**")
+        st.write(
+            f"🧹 `{target}` : 결측치/무한대 제거 후 **{before - after}개 삭제**, "
+            f"남은 샘플 **{after}개**"
+        )
 
         X_clean = data_xy.drop(columns=[target])
         y_clean = data_xy[target]
@@ -100,19 +110,20 @@ if st.sidebar.button("모든 모델 훈련 시작"):
             st.warning(f"`{target}` 정리 후 한 개의 클래스만 남아 모델 훈련 불가. 건너뜁니다.")
             continue
 
-        # 훈련/테스트 데이터 분리
+        # 2. 훈련/테스트 데이터 분리
         try:
             X_train, X_test, y_train, y_test = train_test_split(
-                X_clean, y_clean,
+                X_clean,
+                y_clean,
                 test_size=test_size,
-                random_state=random_state,
-                stratify=y_clean
+                random_state=RANDOM_STATE,
+                stratify=y_clean,
             )
         except ValueError as e:
             st.warning(f"`{target}` 훈련/테스트 분리 오류: {e}")
             continue
 
-        # 모델 훈련
+        # 3. 모델 훈련
         model = LogisticRegression(max_iter=1000, solver="liblinear")
         try:
             model.fit(X_train, y_train)
@@ -120,20 +131,35 @@ if st.sidebar.button("모든 모델 훈련 시작"):
             st.warning(f"`{target}` 모델 훈련 중 오류 발생: {e}")
             continue
 
-        # 예측
+        # 4. 예측
         y_pred = model.predict(X_test)
         try:
             y_proba = model.predict_proba(X_test)[:, 1]
         except Exception:
             y_proba = None
 
+        # 5. 성능 지표 계산
         acc = accuracy_score(y_test, y_pred)
-        st.write(f"- 정확도 (Accuracy): **{acc:.4f}**")
+        prec = precision_score(y_test, y_pred, zero_division=0)
+        rec = recall_score(y_test, y_pred, zero_division=0)
+        f1 = f1_score(y_test, y_pred, zero_division=0)
 
+        st.write(f"- 정확도 (Accuracy): **{acc:.4f}**")
+        st.write(f"- 정밀도 (Precision): **{prec:.4f}**")
+        st.write(f"- 재현율 (Recall): **{rec:.4f}**")
+        st.write(f"- F1 점수 (F1-score): **{f1:.4f}**")
+
+        # ROC-AUC 및 ROC 곡선
         if y_proba is not None and y_test.nunique() == 2:
             try:
                 auc = roc_auc_score(y_test, y_proba)
                 st.write(f"- ROC-AUC: **{auc:.4f}**")
+
+                # ROC 곡선 데이터 계산
+                fpr, tpr, _ = roc_curve(y_test, y_proba)
+                roc_df = pd.DataFrame({"FPR": fpr, "TPR": tpr}).set_index("FPR")
+
+                st.line_chart(roc_df)  # FPR을 x축, TPR을 y축으로 ROC 곡선 표시
             except ValueError:
                 auc = np.nan
                 st.write("- ROC-AUC 계산 불가")
@@ -141,17 +167,23 @@ if st.sidebar.button("모든 모델 훈련 시작"):
             auc = np.nan
             st.write("- ROC-AUC 제공 불가")
 
-        # 결과 저장
-        results.append({
-            "Target (Y)": target,
-            "Accuracy": round(acc, 4),
-            "ROC-AUC": round(auc, 4) if not np.isnan(auc) else None
-        })
+        # 6. 결과 저장 (요약 테이블용)
+        results.append(
+            {
+                "Target (Y)": target,
+                "Accuracy": round(acc, 4),
+                "Precision": round(prec, 4),
+                "Recall": round(rec, 4),
+                "F1-score": round(f1, 4),
+                "ROC-AUC": round(auc, 4) if not np.isnan(auc) else None,
+            }
+        )
 
-    # 결과 요약 테이블
+    # 7. 결과 요약 테이블
     if results:
         st.subheader("📊 모든 Logit 모델 성능 비교")
-        st.dataframe(pd.DataFrame(results))
+        results_df = pd.DataFrame(results)
+        st.dataframe(results_df)
     else:
         st.warning("⚠ 성공적으로 훈련된 모델이 없습니다.")
 else:
