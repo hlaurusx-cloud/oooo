@@ -5,131 +5,146 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import (
-    classification_report,
-    confusion_matrix,
-    roc_auc_score,
-)
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score
 
-st.set_page_config(
-    page_title="지능형 신용평가모형 데모",
-    layout="wide"
-)
+st.set_page_config(page_title="信用评估模型 (HTML 数据版)", layout="wide")
 
-st.title("지능형 신용평가모형 (Logistic Regression)")
-st.write("건전 15,000건 / 부실 15,000건 샘플링 후 로지스틱 회귀로 모형을 학습합니다.")
+st.title("💳 智能型信用评分模型（逻辑回归）")
+st.write("直接使用上传的 **HTML 文件中的表格数据**，进行建模和可视化。")
 
 
-# ------------------------------------------------------------------
-# 1. 데이터 불러오기
-# ------------------------------------------------------------------
-st.sidebar.header("1. 데이터 불러오기")
+# ------------------------------------------------------------
+# 1. 上传 HTML 文件并解析为多个 DataFrame
+# ------------------------------------------------------------
+st.sidebar.header("1️⃣ 上传 HTML 数据文件")
 
 uploaded_file = st.sidebar.file_uploader(
-    "처리·인코딩된 데이터 파일 업로드 (CSV 권장)",
-    type=["csv", "txt"]
+    "请选择已经处理好的 HTML 文件",
+    type=["html", "htm"]
 )
 
-if uploaded_file is not None:
-    # 필요에 따라 sep, encoding 바꾸세요
-    df = pd.read_csv(uploaded_file)
-    st.success("데이터 업로드 완료!")
-    st.write("데이터 미리보기:")
-    st.dataframe(df.head())
-else:
-    st.warning("왼쪽 사이드바에서 데이터를 업로드해주세요.")
+if uploaded_file is None:
+    st.warning("请在左侧上传 HTML 文件（.html 或 .htm）")
     st.stop()
 
+# 读 HTML 里的所有 <table> 标签
+try:
+    tables = pd.read_html(uploaded_file)
+except Exception as e:
+    st.error(f"读取 HTML 失败：{e}")
+    st.stop()
 
-# ------------------------------------------------------------------
-# 2. 타겟 변수/라벨 선택
-# ------------------------------------------------------------------
-st.sidebar.header("2. 타겟 변수 설정")
+st.sidebar.success(f"已从 HTML 中解析出 {len(tables)} 个表格")
 
-# 실제 타겟 컬럼명을 선택하게 함
+# 选择用于建模的表格 index
+table_index = st.sidebar.number_input(
+    "选择用于建模的数据表索引（从 0 开始）",
+    min_value=0,
+    max_value=len(tables)-1,
+    value=0,
+    step=1
+)
+
+df = tables[table_index]
+st.write(f"### 使用的表格 (index = {table_index}) 数据预览")
+st.dataframe(df.head())
+
+
+# ------------------------------------------------------------
+# 2. 选择目标变量（好/坏客户标签）
+# ------------------------------------------------------------
+st.sidebar.header("2️⃣ 设置目标变量（好/坏标签）")
+
+# 选择目标列
 target_col = st.sidebar.selectbox(
-    "부실/건전 라벨이 들어있는 타겟 컬럼 선택",
+    "请选择目标变量列（例如 target / loan_status 等）",
     options=df.columns
 )
 
-# 타겟 값(범주) 보여주기
+# 查看目标列的唯一取值
 unique_vals = df[target_col].dropna().unique()
-st.sidebar.write(f"타겟 고유값: {unique_vals}")
+st.sidebar.write("该列的唯一取值：", unique_vals)
 
-# 사용자가 '건전' 라벨 값, '부실' 라벨 값 선택
+if len(unique_vals) < 2:
+    st.error("目标列的取值种类少于 2，无法进行二分类建模。请换一个目标列。")
+    st.stop()
+
+# 选择“好 / 坏”对应的值
+bad_value = st.sidebar.selectbox("请选择『坏客户 / 违约』的标签值", options=unique_vals)
 good_value = st.sidebar.selectbox(
-    "건전(정상) 대출 라벨 값 선택",
-    options=unique_vals
-)
-bad_value = st.sidebar.selectbox(
-    "부실(연체) 대출 라벨 값 선택",
-    options=[v for v in unique_vals if v != good_value]
+    "请选择『好客户 / 正常』的标签值",
+    options=[v for v in unique_vals if v != bad_value]
 )
 
-# ------------------------------------------------------------------
-# 3. 건전 15,000 / 부실 15,000 샘플링
-# ------------------------------------------------------------------
-st.sidebar.header("3. 샘플링 옵션")
+st.write(f"**目标列：** `{target_col}`，坏 = `{bad_value}`，好 = `{good_value}`")
+
+
+# ------------------------------------------------------------
+# 3. 按好/坏各抽样 15000 条
+# ------------------------------------------------------------
+st.sidebar.header("3️⃣ 抽样与模型训练")
 sample_n = 15000
+test_size = st.sidebar.slider("测试集比例", 0.1, 0.4, 0.3, 0.05)
 
-if st.sidebar.button("건전/부실 데이터 샘플링 및 모형 학습"):
-    # 건전 / 부실 분리
-    good_df = df[df[target_col] == good_value]
+if st.sidebar.button("开始抽样 + 训练模型"):
+    # 分成好/坏两部分
     bad_df = df[df[target_col] == bad_value]
+    good_df = df[df[target_col] == good_value]
 
-    st.write("### 타겟 분포")
-    st.write(f"- 건전({good_value}) 데이터 수: {len(good_df)}")
-    st.write(f"- 부실({bad_value}) 데이터 수: {len(bad_df)}")
+    st.write("### 原始数据中标签分布")
+    st.write(f"- 坏客户({bad_value})：{len(bad_df)} 条")
+    st.write(f"- 好客户({good_value})：{len(good_df)} 条")
 
-    # 부족하면 replace=True로 중복 허용 샘플
-    good_sample = good_df.sample(
-        n=sample_n,
-        replace=len(good_df) < sample_n,
-        random_state=42
-    )
+    # 抽样（如果不足 15000 就放回采样）
     bad_sample = bad_df.sample(
         n=sample_n,
         replace=len(bad_df) < sample_n,
         random_state=42
     )
-
-    sampled_df = pd.concat([good_sample, bad_sample], axis=0)
-    sampled_df = sampled_df.sample(frac=1, random_state=42).reset_index(drop=True)
-
-    st.success(f"건전/부실 각각 {sample_n}건씩 샘플링 완료! (총 {len(sampled_df)}건)")
-    st.write("샘플링된 데이터 미리보기:")
-    st.dataframe(sampled_df.head())
-
-    # ------------------------------------------------------------------
-    # 4. 피처/타겟 분리 + 숫자형 피처만 사용 (이미 인코딩 되어있다고 가정)
-    # ------------------------------------------------------------------
-    y = sampled_df[target_col]
-
-    # 타겟 컬럼 제거
-    X = sampled_df.drop(columns=[target_col])
-
-    # 숫자형 변수만 사용 (원핫 인코딩 완료 상태라는 가정)
-    X_num = X.select_dtypes(include=[np.number])
-
-    st.write(f"사용되는 숫자형 피처 수: {X_num.shape[1]}개")
-
-    # ------------------------------------------------------------------
-    # 5. 학습/검증 데이터 분할
-    # ------------------------------------------------------------------
-    test_size = st.sidebar.slider("테스트 데이터 비율", 0.1, 0.4, 0.3, 0.05)
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X_num, y, test_size=test_size, random_state=42, stratify=y
+    good_sample = good_df.sample(
+        n=sample_n,
+        replace=len(good_df) < sample_n,
+        random_state=42
     )
 
-    # 스케일링 (옵션)
+    sampled_df = pd.concat([bad_sample, good_sample], axis=0)
+    sampled_df = sampled_df.sample(frac=1, random_state=42).reset_index(drop=True)
+
+    st.success(f"已从好/坏各抽取 {sample_n} 条样本，共 {len(sampled_df)} 条。")
+    st.write("抽样后数据预览：")
+    st.dataframe(sampled_df.head())
+
+    # --------------------------------------------------------
+    # 4. 特征 / 目标拆分（只用数值型特征）
+    # --------------------------------------------------------
+    y = sampled_df[target_col]
+    X = sampled_df.drop(columns=[target_col])
+
+    # 只取数值型列（HTML 已编码好的话，这里一般都是数值 + 少量字符串列）
+    X_num = X.select_dtypes(include=[np.number])
+    st.write(f"用于建模的数值型特征个数：{X_num.shape[1]}")
+
+    if X_num.shape[1] == 0:
+        st.error("没有检测到数值型特征列，无法进行逻辑回归。请确认数据是否已经编码/数值化。")
+        st.stop()
+
+    # --------------------------------------------------------
+    # 5. 训练 / 测试集划分 & 标准化
+    # --------------------------------------------------------
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_num, y,
+        test_size=test_size,
+        random_state=42,
+        stratify=y
+    )
+
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test)
 
-    # ------------------------------------------------------------------
-    # 6. 로지스틱 회귀 모형 학습
-    # ------------------------------------------------------------------
+    # --------------------------------------------------------
+    # 6. 逻辑回归模型训练
+    # --------------------------------------------------------
     model = LogisticRegression(
         max_iter=1000,
         n_jobs=-1,
@@ -137,38 +152,43 @@ if st.sidebar.button("건전/부실 데이터 샘플링 및 모형 학습"):
     )
     model.fit(X_train_scaled, y_train)
 
-    st.success("로지스틱 회귀 모형 학습 완료!")
+    st.success("✅ 逻辑回归模型训练完成！")
 
-    # ------------------------------------------------------------------
-    # 7. 성능 평가
-    # ------------------------------------------------------------------
+    # --------------------------------------------------------
+    # 7. 模型评估
+    # --------------------------------------------------------
     y_pred = model.predict(X_test_scaled)
-    y_pred_proba = model.predict_proba(X_test_scaled)[:, 1]
+    if len(np.unique(y)) == 2:
+        # 把“坏客户”的概率作为预测概率（需要找对应的列）
+        bad_index = list(model.classes_).index(bad_value)
+        y_pred_proba = model.predict_proba(X_test_scaled)[:, bad_index]
+    else:
+        y_pred_proba = None
 
-    st.subheader("분류 리포트")
+    st.subheader("📊 分类报告 (Classification Report)")
     st.text(classification_report(y_test, y_pred))
 
-    st.subheader("Confusion Matrix")
+    st.subheader("📉 混淆矩阵 (Confusion Matrix)")
     cm = confusion_matrix(y_test, y_pred)
     cm_df = pd.DataFrame(
         cm,
-        index=[f"실제_{good_value}", f"실제_{bad_value}"],
-        columns=[f"예측_{good_value}", f"예측_{bad_value}"]
+        index=[f"真实_{c}" for c in model.classes_],
+        columns=[f"预测_{c}" for c in model.classes_]
     )
     st.dataframe(cm_df)
 
-    # ROC-AUC (이진 분류일 때만 의미 있음)
-    try:
-        auc = roc_auc_score(y_test, y_pred_proba)
-        st.subheader("ROC-AUC")
-        st.write(f"ROC-AUC: **{auc:.4f}**")
-    except Exception as e:
-        st.info(f"ROC-AUC 계산 중 오류: {e}")
+    if y_pred_proba is not None:
+        try:
+            auc = roc_auc_score((y_test == bad_value).astype(int), y_pred_proba)
+            st.subheader("📈 ROC-AUC")
+            st.write(f"ROC-AUC：**{auc:.4f}**（以坏客户 `{bad_value}` 为正类）")
+        except Exception as e:
+            st.info(f"计算 ROC-AUC 时出错：{e}")
 
-    # ------------------------------------------------------------------
-    # 8. 계수(Feature Importance 비슷하게) 보기
-    # ------------------------------------------------------------------
-    st.subheader("로지스틱 회귀 계수 (Feature Importance 느낌으로 보기)")
+    # --------------------------------------------------------
+    # 8. 查看特征系数（重要性）
+    # --------------------------------------------------------
+    st.subheader("🔍 特征系数（绝对值越大影响越大）")
     coef_df = pd.DataFrame({
         "feature": X_num.columns,
         "coef": model.coef_[0]
@@ -177,5 +197,6 @@ if st.sidebar.button("건전/부실 데이터 샘플링 및 모형 학습"):
     coef_df = coef_df.sort_values("abs_coef", ascending=False)
 
     st.dataframe(coef_df[["feature", "coef"]].head(30))
+
 else:
-    st.info("사이드바에서 **[건전/부실 데이터 샘플링 및 모형 학습]** 버튼을 눌러주세요.")
+    st.info("在侧边栏设置好 **HTML 文件 + 目标列 + 好/坏标签** 后，点击「开始抽样 + 训练模型」。")
